@@ -886,6 +886,27 @@ class Project(Client):
         response = self.make_request('POST', '/api/dm/views', json=data)
         return response.json()
 
+    def create_view_dict(self, view: dict):
+        """Create view
+
+        Parameters
+        ----------
+        view: dict
+            dict defining the view
+        Returns
+        -------
+        dict:
+            dict with created view
+
+        """
+
+        data = {
+            'project': self.id,
+            'data': view['data'],            
+        }
+        response = self.make_request('POST', '/api/dm/views', json=data)
+        return response.json()
+
     @property
     def tasks(self):
         """Retrieve all tasks from the project. This call can be very slow if the project has a lot of tasks."""
@@ -1165,6 +1186,24 @@ class Project(Client):
         response.raise_for_status()
         return response.json()
 
+    def delete_annotation(self, annotation_id: int) -> Response:
+        """Delete specific annotation e.g.
+            ```
+            project.delete_annotation(annotation_id=123)
+            ```
+
+        Parameters
+        ----------
+        annotation_id: int
+      
+        Returns
+        -------
+        Response code from request
+
+        """
+        assert isinstance(annotation_id, int), 'annotation_id should be int'
+        return self.make_request("DELETE", f"/api/annotations/{annotation_id}")
+    
     def update_annotation(self, annotation_id, **kwargs):
         """Update specific annotation with new annotation parameters, e.g.
             ```
@@ -1857,6 +1896,39 @@ class Project(Client):
             fraction=fraction,
             overlap=overlap,
         )
+
+    def get_export_snapshot(self, title="Snapshot"):
+        """
+        Export all tasks from the project as JSON file
+        download the file to working folder.
+        """
+        # create new export snapshot
+        export_result = self.export_snapshot_create(
+            title=title,
+            serialization_options_annotations__completed_by = False,
+            task_filter_options = None, 
+            serialization_options_drafts = True, 
+            serialization_options_predictions = True, 
+            annotation_filter_options_usual = True, 
+            annotation_filter_options_ground_truth = True, 
+            annotation_filter_options_skipped = True, 
+            interpolate_key_frames = False,
+        )
+        assert "id" in export_result
+        export_id = export_result["id"]
+
+        # wait until snapshot is ready
+        while self.export_snapshot_status(export_id).is_in_progress():
+            time.sleep(1.0)
+
+        # download snapshot file
+        status, file_name = self.export_snapshot_download(
+            export_id, export_type="JSON"
+        )
+        assert status == 200
+        assert file_name is not None
+        logger.info(f"Status of the export is {status}. File name is {file_name}")
+        return status, file_name
 
     def export_snapshot_list(self) -> list:
         """
