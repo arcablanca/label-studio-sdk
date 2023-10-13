@@ -1,5 +1,7 @@
 """ .. include::../docs/client.md
 """
+import os
+
 import json
 import warnings
 import logging
@@ -15,11 +17,12 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 TIMEOUT = (10.0, 180.0)
 HEADERS = {}
+LABEL_STUDIO_DEFAULT_URL = 'http://localhost:8080'
 
 
 class ClientCredentials(BaseModel):
-    email: Optional[str]
-    password: Optional[str]
+    email: Optional[str] = None
+    password: Optional[str] = None
     api_key: Optional[constr()] = None
 
     @root_validator(pre=True, allow_reuse=True)
@@ -36,8 +39,8 @@ class ClientCredentials(BaseModel):
 class Client(object):
     def __init__(
         self,
-        url,
-        api_key,
+        url: str = None,
+        api_key: str = None,
         credentials=None,
         session=None,
         extra_headers: dict = None,
@@ -70,11 +73,19 @@ class Client(object):
         make_request_raise: bool
             If true, make_request will raise exceptions on request errors
         """
+        if not url:
+            url = os.getenv('LABEL_STUDIO_URL', LABEL_STUDIO_DEFAULT_URL)
         self.url = url.rstrip('/')
         self.make_request_raise = make_request_raise
         self.session = session or self.get_session()
 
+        # set cookies
+        self.cookies = cookies
+
         # set api key or get it using credentials (username and password)
+        if api_key is None and credentials is None:
+            api_key = os.getenv('LABEL_STUDIO_API_KEY')
+
         if api_key is not None:
             credentials = ClientCredentials(api_key=api_key)
         self.api_key = (
@@ -89,9 +100,6 @@ class Client(object):
             self.headers.update({'Proxy-Authorization': f'Bearer {oidc_token}'})
         if extra_headers:
             self.headers.update(extra_headers)
-
-        # set cookies
-        self.cookies = cookies
 
         # set versions from /version endpoint
         self.versions = versions if versions else self.get_versions()
@@ -138,7 +146,7 @@ class Client(object):
         response = self.make_request('GET', '/health')
         return response.json()
 
-    def get_projects(self):
+    def get_projects(self, **query_params):
         """List all projects in Label Studio.
 
         Returns
@@ -146,7 +154,7 @@ class Client(object):
         list or `label_studio_sdk.project.Project` instances
 
         """
-        return self.list_projects()
+        return self.list_projects(**query_params)
 
     def delete_project(self, project_id: int):
         """Delete a project in Label Studio.
@@ -174,7 +182,7 @@ class Client(object):
             responses.append(response)
         return responses
 
-    def list_projects(self):
+    def list_projects(self, **query_params):
         """List all projects in Label Studio.
 
         Returns
@@ -184,9 +192,9 @@ class Client(object):
         """
         from .project import Project
 
-        response = self.make_request(
-            'GET', '/api/projects', params={'page_size': 10000000}
-        )
+        params = {'page_size': 10000000}
+        params.update(query_params)
+        response = self.make_request('GET', '/api/projects', params=params)
         if response.status_code == 200:
             projects = []
             for data in response.json()['results']:
@@ -198,6 +206,9 @@ class Client(object):
                     f'Project {project.id} "{project.get_params().get("title")}" is retrieved'
                 )
             return projects
+
+    def create_project(self, **kwargs):
+        return self.start_project(**kwargs)
 
     def start_project(self, **kwargs):
         """Create a new project instance.
@@ -291,7 +302,9 @@ class Client(object):
             else user
         )
 
-        response = self.make_request('POST', '/api/users', json=payload, raise_exceptions=False)
+        response = self.make_request(
+            'POST', '/api/users', json=payload, raise_exceptions=False
+        )
         user_data = response.json()
         user_data['client'] = self
 
@@ -390,20 +403,24 @@ class Client(object):
 
         if raise_exceptions:
             if response.status_code >= 400:
-                try:
-                    content = json.dumps(json.loads(response.content), indent=2)
-                except:
-                    content = response.text
-
-                logger.error(
-                    f'\n--------------------------------------------\n'
-                    f'Request URL: {response.url}\n'
-                    f'Response status code: {response.status_code}\n'
-                    f'Response content:\n{content}\n\n'
-                    f'SDK error traceback:')
+                self.log_response_error(response)
                 response.raise_for_status()
 
         return response
+
+    def log_response_error(self, response):
+        try:
+            content = json.dumps(json.loads(response.content), indent=2)
+        except:
+            content = response.text
+
+        logger.error(
+            f'\n--------------------------------------------\n'
+            f'Request URL: {response.url}\n'
+            f'Response status code: {response.status_code}\n'
+            f'Response content:\n{content}\n\n'
+            f'SDK error traceback:'
+        )
 
     def sync_storage(self, storage_type, storage_id):
         """Synchronize Cloud Storage.

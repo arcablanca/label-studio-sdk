@@ -16,7 +16,7 @@ logger = logging.getLogger('migration-ls-to-ls')
 
 
 class Migration:
-    def __init__(self, src_url, src_key, dst_url, dst_key):
+    def __init__(self, src_url, src_key, dst_url, dst_key, dest_workspace):
         """Initialize migration that copy projects from one LS instance to another
 
         :param src_url: source Label Studio instance
@@ -28,6 +28,7 @@ class Migration:
         self.src_ls = Client(url=src_url, api_key=src_key)
         self.dst_ls = Client(url=dst_url, api_key=dst_key)
         self.users = self.projects = self.project_ids = None
+        self.dest_workspace = dest_workspace
 
     def set_project_ids(self, project_ids=None):
         """Set projects you need to migrate
@@ -38,7 +39,7 @@ class Migration:
 
     def run(self, project_ids=None):
         projects = self.get_projects(project_ids)
-        users = self.get_users(projects)
+        users = self.get_users()  # self.get_users(projects)
         self.create_users(users)
 
         # start exporting projects
@@ -55,7 +56,9 @@ class Migration:
             if status != 200:
                 logger.info(f'Skipping project {project.id} because of errors {status}')
                 continue
-
+                
+            if self.dest_workspace is not None:
+                project.params['workspace'] = self.dest_workspace
             new_project = self.create_project(project)
 
             logger.info(f'Going to import {filename} to project {new_project.id}')
@@ -98,6 +101,7 @@ class Migration:
             'skip_queue',
             'reveal_preannotations_interactively',
             'require_comment_on_skip',
+            'workspace'
         }
         params = {
             field: project.params[field]
@@ -139,10 +143,10 @@ class Migration:
 
         return self.projects
 
-    def get_users(self, projects: [Project]) -> [User]:
+    def get_users(self, projects=None) -> [User]:
         """Get users that are members of all projects at the source instance"""
         # enterprise instance
-        if self.src_ls.is_enterprise:
+        if self.src_ls.is_enterprise and projects:
             users = {}
             for project in projects:
                 members = project.get_members()
@@ -178,7 +182,9 @@ class Migration:
         # create new export snapshot
         export_result = project.export_snapshot_create(
             title='Migration snapshot',
+            serialization_options_drafts=False,
             serialization_options_annotations__completed_by=False,
+            serialization_options_predictions=False
         )
         assert 'id' in export_result
         export_id = export_result['id']
@@ -272,6 +278,13 @@ def run():
         default=None,
         help='Project ids separated by comma, e.g.: 54,78,98',
     )
+    parser.add_argument(
+        '--dest-workspace',
+        dest='dest_workspace',
+        type=str,
+        default=None,
+        help='Workspace where to store projects, e.g.: 42',
+    )
     args = parser.parse_args(sys.argv[1:])
 
     migration = Migration(
@@ -279,6 +292,7 @@ def run():
         src_key=args.src_key,
         dst_url=args.dst_url,
         dst_key=args.dst_key,
+        dest_workspace=args.dest_workspace,
     )
     logging.basicConfig(level=logging.INFO)
 
